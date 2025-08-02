@@ -1,5 +1,4 @@
 *.csv
-*.pkl
 *.zip
 Train/test.csv
 Train/train.csv
