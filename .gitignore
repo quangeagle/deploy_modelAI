@@ -1,0 +1,6 @@
+*.csv
+*.pkl
+*.zip
+Train/test.csv
+Train/train.csv
+Train/catboost_info/Visuelle/store_train_with_image_features.csv
