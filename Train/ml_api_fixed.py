@@ -4,7 +4,7 @@ from pydantic import BaseModel
 import numpy as np
 import pickle
 import uvicorn
-
+print("✅ Đang chạy đúng file: ml_api_fixed.py")
 # Load mô hình và scalers
 with open("model_checkpoints/best_ml_model.pkl", "rb") as f:
     model = pickle.load(f)
