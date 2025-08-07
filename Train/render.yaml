@@ -1,7 +1,7 @@
 services:
   - type: web
-    name: ml-api
+    name: revenue-api
     env: python
     plan: free
-    buildCommand: ""
-    startCommand: bash start.sh
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn combined_api:app --host=0.0.0.0 --port=$PORT
