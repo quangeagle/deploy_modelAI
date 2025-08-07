@@ -129,4 +129,6 @@ def test_prediction():
 
 # === Run app ===
 if __name__ == "__main__":
-    uvicorn.run("allapi:app", host="0.0.0.0", port=10002, reload=True)
+    import os
+    port = int(os.environ.get("PORT", 10002))  # fallback port 10002
+    uvicorn.run("allapi:app", host="0.0.0.0", port=port, reload=True)
