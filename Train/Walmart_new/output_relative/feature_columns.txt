@@ -1,0 +1,10 @@
+Temperature_change
+Fuel_Price_change
+CPI_change
+Unemployment_change
+Holiday_Flag
+Month
+WeekOfYear
+Year
+DayOfWeek
+Is_Weekend
