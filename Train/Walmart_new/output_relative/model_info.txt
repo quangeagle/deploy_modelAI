@@ -1,0 +1,35 @@
+WALMART SALES PREDICTION MODEL INFO
+==================================================
+
+Ngày xuất: 2025-08-11 22:37:36
+Loại model: XGBoost Adjustment cho GRU
+Tỉ lệ ensemble: GRU_pred + XGBoost_adjustment
+Feature type: relative
+
+PERFORMANCE METRICS:
+------------------------------
+GRU R²: 0.7424
+XGBoost Adjustment R²: -2.6268
+Ensemble R²: 0.9033
+Ensemble RMSE: 48709.28
+Ensemble MAE: 41754.58
+
+FEATURES (10):
+------------------------------
+1. Temperature_change
+2. Fuel_Price_change
+3. CPI_change
+4. Unemployment_change
+5. Holiday_Flag
+6. Month
+7. WeekOfYear
+8. Year
+9. DayOfWeek
+10. Is_Weekend
+
+USAGE:
+------------------------------
+1. Load model: joblib.load('output_relative/xgb_model.pkl')
+2. Load features: open('output_relative/feature_columns.txt', 'r').read().splitlines()
+3. Predict adjustment: adjustment = model.predict(features)
+4. Final prediction = GRU_pred + adjustment
