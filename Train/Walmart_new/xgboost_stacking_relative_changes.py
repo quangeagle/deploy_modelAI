@@ -113,7 +113,7 @@ def prepare_features_relative(df):
 def prepare_features_and_target(df, feature_type='absolute'):
     """
     Chuẩn bị features và target cho training
-    XGBoost sẽ học cách điều chỉnh GRU predictions, không phải dự đoán trực tiếp Weekly_Sales
+    XGBoost sẽ học cách điều chỉnh GRU predictions theo tỷ lệ, không phải giá trị tuyệt đối
     """
     print(f"🔄 Đang chuẩn bị features và target ({feature_type})...")
     
@@ -151,19 +151,30 @@ def prepare_features_and_target(df, feature_type='absolute'):
     # Chuẩn bị X (features) và y (target)
     X = df_with_gru[available_features].copy()
     
-    # Target mới: ĐIỀU CHỈNH cần thiết để GRU prediction = Weekly_Sales thực tế
-    # adjustment = Weekly_Sales_thực_tế - GRU_prediction
-    # XGBoost sẽ học cách dự đoán adjustment này
-    y = df_with_gru['Weekly_Sales'] - df_with_gru['gru_pred']
+    # 🚀 TARGET MỚI: ĐIỀU CHỈNH TƯƠNG ĐỐI thay vì tuyệt đối
+    # Thay vì: adjustment = Weekly_Sales_thực_tế - GRU_prediction
+    # Bây giờ: adjustment_ratio = (Weekly_Sales_thực_tế - GRU_prediction) / GRU_prediction
+    # XGBoost sẽ học cách dự đoán adjustment_ratio này
+    y = (df_with_gru['Weekly_Sales'] - df_with_gru['gru_pred']) / df_with_gru['gru_pred']
     
-    print(f"🎯 Target mới: XGBoost học cách dự đoán ADJUSTMENT (Weekly_Sales - GRU_pred)")
-    print(f"   Adjustment range: {y.min():.2f} đến {y.max():.2f}")
-    print(f"   Adjustment mean: {y.mean():.2f}")
+    print(f"🎯 Target MỚI: XGBoost học cách dự đoán ADJUSTMENT RATIO")
+    print(f"   Adjustment ratio = (Weekly_Sales - GRU_pred) / GRU_pred")
+    print(f"   Adjustment ratio range: {y.min():.4f} đến {y.max():.4f}")
+    print(f"   Adjustment ratio mean: {y.mean():.4f}")
+    print(f"   Ví dụ: 0.05 = tăng 5%, -0.03 = giảm 3%")
     
     # Kiểm tra NaN và infinity
     print("🔍 Kiểm tra dữ liệu...")
     print(f"Target NaN: {y.isnull().sum()}")
+    print(f"Target Infinity: {np.isinf(y).sum()}")
     print(f"Features NaN: {X.isnull().sum().sum()}")
+    
+    # Xử lý NaN và infinity trong target
+    if y.isnull().sum() > 0 or np.isinf(y).sum() > 0:
+        print("⚠️ Đang xử lý NaN và Infinity trong target...")
+        # Thay thế NaN và Infinity bằng 0 (không điều chỉnh)
+        y = y.replace([np.inf, -np.inf], 0).fillna(0)
+        print(f"   Sau khi xử lý: NaN: {y.isnull().sum()}, Infinity: {np.isinf(y).sum()}")
     
     # Xử lý NaN trong features
     if X.isnull().sum().sum() > 0:
@@ -177,6 +188,7 @@ def prepare_features_and_target(df, feature_type='absolute'):
     
     print(f"✅ Features shape: {X.shape}")
     print(f"✅ Target shape: {y.shape}")
+    print(f"✅ Target range: {y.min():.4f} đến {y.max():.4f}")
     
     return X, y, available_features
 
@@ -226,19 +238,20 @@ def train_xgboost_model(X, y):
 def evaluate_model(model, X_train, X_test, y_train, y_test, feature_type, df_test=None):
     """
     Đánh giá model và tính ensemble predictions
-    XGBoost giờ đây dự đoán ADJUSTMENT, không phải Weekly_Sales trực tiếp
+    XGBoost giờ đây dự đoán ADJUSTMENT RATIO, không phải Weekly_Sales trực tiếp
     """
     print(f"🔄 Đang đánh giá model ({feature_type})...")
     
-    # Predictions - XGBoost dự đoán ADJUSTMENT
-    adjustment_train_pred = model.predict(X_train)
-    adjustment_test_pred = model.predict(X_test)
+    # Predictions - XGBoost dự đoán ADJUSTMENT RATIO
+    adjustment_ratio_train_pred = model.predict(X_train)
+    adjustment_ratio_test_pred = model.predict(X_test)
     
-    print("🎯 XGBoost dự đoán ADJUSTMENT (Weekly_Sales - GRU_pred)")
-    print(f"   Adjustment range: {adjustment_test_pred.min():.2f} đến {adjustment_test_pred.max():.2f}")
+    print("🎯 XGBoost dự đoán ADJUSTMENT RATIO ((Weekly_Sales - GRU_pred) / GRU_pred)")
+    print(f"   Adjustment ratio range: {adjustment_ratio_test_pred.min():.4f} đến {adjustment_ratio_test_pred.max():.4f}")
+    print(f"   Ví dụ: 0.05 = tăng 5%, -0.03 = giảm 3%")
     
     # Tính ensemble predictions (GRU + XGBoost adjustment)
-    print("🔄 Đang tính ensemble predictions (GRU + XGBoost adjustment)...")
+    print("🔄 Đang tính ensemble predictions (GRU + XGBoost adjustment ratio)...")
     
     # Lấy GRU predictions từ test set
     # Chúng ta cần df_test để truy cập gru_pred
@@ -247,30 +260,30 @@ def evaluate_model(model, X_train, X_test, y_train, y_test, feature_type, df_tes
         print(f"✅ Đã lấy GRU predictions từ df_test")
     else:
         print("⚠️ Không có df_test, sử dụng fallback logic")
-        # Fallback: giả sử y_test là adjustment và tính ngược lại
+        # Fallback: giả sử y_test là adjustment ratio và tính ngược lại
         # Điều này không lý tưởng nhưng để tránh lỗi
-        gru_pred_test = np.zeros_like(adjustment_test_pred)  # Placeholder
+        gru_pred_test = np.ones_like(adjustment_ratio_test_pred) * 1000000  # Placeholder 1M
     
-    # Ensemble: final_pred = GRU_pred + XGBoost_adjustment
-    ensemble_test_pred = gru_pred_test + adjustment_test_pred
+    # 🚀 ENSEMBLE MỚI: final_pred = GRU_pred * (1 + adjustment_ratio)
+    # Thay vì: final_pred = GRU_pred + adjustment
+    # Bây giờ: final_pred = GRU_pred * (1 + adjustment_ratio)
+    ensemble_test_pred = gru_pred_test * (1 + adjustment_ratio_test_pred)
     
-    print(f"📊 Ensemble: GRU_pred + XGBoost_adjustment")
+    print(f"📊 Ensemble MỚI: GRU_pred * (1 + adjustment_ratio)")
     print(f"   GRU predictions range: {gru_pred_test.min():.2f} đến {gru_pred_test.max():.2f}")
-    print(f"   XGBoost adjustments range: {adjustment_test_pred.min():.2f} đến {adjustment_test_pred.max():.2f}")
+    print(f"   XGBoost adjustment ratios range: {adjustment_ratio_test_pred.min():.4f} đến {adjustment_ratio_test_pred.max():.4f}")
+    print(f"   Final ensemble range: {ensemble_test_pred.min():.2f} đến {ensemble_test_pred.max():.2f}")
     
     # Tính metrics cho từng model
     print("\n📊 KẾT QUẢ ĐÁNH GIÁ:")
     print("=" * 50)
-    
-    # 1. GRU model (baseline) - cần Weekly_Sales thực tế
-    # Để tính Weekly_Sales thực tế, chúng ta cần: Weekly_Sales = gru_pred + adjustment
     if df_test is not None and 'Weekly_Sales' in df_test.columns:
         weekly_sales_test = df_test['Weekly_Sales'].iloc[X_test.index]
         print(f"✅ Đã lấy Weekly_Sales thực tế từ df_test")
     else:
         print("⚠️ Không có df_test, sử dụng fallback logic")
-        # Fallback: giả sử y_test là adjustment và tính Weekly_Sales
-        weekly_sales_test = gru_pred_test + y_test  # y_test là adjustment
+        # Fallback: tính ngược lại từ adjustment ratio
+        weekly_sales_test = gru_pred_test * (1 + y_test)
     
     gru_r2 = r2_score(weekly_sales_test, gru_pred_test)
     gru_rmse = np.sqrt(mean_squared_error(weekly_sales_test, gru_pred_test))
@@ -281,22 +294,22 @@ def evaluate_model(model, X_train, X_test, y_train, y_test, feature_type, df_tes
     print(f"   RMSE: {gru_rmse:.2f}")
     print(f"   MAE: {gru_mae:.2f}")
     
-    # 2. XGBoost model - dự đoán ADJUSTMENT
-    xgb_r2 = r2_score(y_test, adjustment_test_pred)  # y_test là adjustment thực tế
-    xgb_rmse = np.sqrt(mean_squared_error(y_test, adjustment_test_pred))
-    xgb_mae = mean_absolute_error(y_test, adjustment_test_pred)
+    # 2. XGBoost model - dự đoán ADJUSTMENT RATIO
+    xgb_r2 = r2_score(y_test, adjustment_ratio_test_pred)  # y_test là adjustment ratio thực tế
+    xgb_rmse = np.sqrt(mean_squared_error(y_test, adjustment_ratio_test_pred))
+    xgb_mae = mean_absolute_error(y_test, adjustment_ratio_test_pred)
     
-    print(f"\n🌳 XGBoost Model (Adjustment):")
+    print(f"\n🌳 XGBoost Model (Adjustment Ratio):")
     print(f"   R² Score: {xgb_r2:.4f}")
-    print(f"   RMSE: {xgb_rmse:.2f}")
-    print(f"   MAE: {xgb_mae:.2f}")
+    print(f"   RMSE: {xgb_rmse:.4f}")
+    print(f"   MAE: {xgb_mae:.4f}")
     
-    # 3. Ensemble model: GRU_pred + XGBoost_adjustment
+    # 3. Ensemble model: GRU_pred * (1 + XGBoost_adjustment_ratio)
     ensemble_r2 = r2_score(weekly_sales_test, ensemble_test_pred)
     ensemble_rmse = np.sqrt(mean_squared_error(weekly_sales_test, ensemble_test_pred))
     ensemble_mae = mean_absolute_error(weekly_sales_test, ensemble_test_pred)
     
-    print(f"\n🚀 Ensemble Model (GRU + XGBoost Adjustment):")
+    print(f"\n🚀 Ensemble Model (GRU * (1 + XGBoost Adjustment Ratio)):")
     print(f"   R² Score: {ensemble_r2:.4f}")
     print(f"   RMSE: {ensemble_rmse:.2f}")
     print(f"   MAE: {ensemble_mae:.2f}")
@@ -556,15 +569,15 @@ def save_results(gain_df, perm_df, shap_df, y_test, ensemble_predictions, featur
     perm_df.to_csv(f"{output_dir}/feature_importance_permutation.csv", index=False)
     shap_df.to_csv(f"{output_dir}/feature_importance_shap.csv", index=False)
     
-    # Lưu predictions - y_test giờ là adjustment target
+    # Lưu predictions - y_test giờ là adjustment ratio target
     predictions_df = pd.DataFrame({
-        'adjustment_target': y_test,  # Target thực tế (Weekly_Sales - GRU_pred)
+        'adjustment_ratio_target': y_test,  # Target thực tế (Weekly_Sales - GRU_pred) / GRU_pred
         'ensemble_prediction': ensemble_predictions
     })
     predictions_df.to_csv(f"{output_dir}/ensemble_predictions.csv", index=False)
     
-    # Lưu thêm thông tin về adjustments
-    adjustment_stats = {
+    # Lưu thêm thông tin về adjustment ratios
+    adjustment_ratio_stats = {
         'Min': y_test.min(),
         'Max': y_test.max(),
         'Mean': y_test.mean(),
@@ -572,17 +585,18 @@ def save_results(gain_df, perm_df, shap_df, y_test, ensemble_predictions, featur
     }
     
     # Lưu stats vào file riêng
-    stats_df = pd.DataFrame([adjustment_stats])
-    stats_df.to_csv(f"{output_dir}/adjustment_stats.csv", index=False)
+    stats_df = pd.DataFrame([adjustment_ratio_stats])
+    stats_df.to_csv(f"{output_dir}/adjustment_ratio_stats.csv", index=False)
     
-    # Lưu adjustment targets
-    adjustment_targets_df = pd.DataFrame({
-        'adjustment_target': y_test
+    # Lưu adjustment ratio targets
+    adjustment_ratio_targets_df = pd.DataFrame({
+        'adjustment_ratio_target': y_test
     })
-    adjustment_targets_df.to_csv(f"{output_dir}/adjustment_targets.csv", index=False)
+    adjustment_ratio_targets_df.to_csv(f"{output_dir}/adjustment_ratio_targets.csv", index=False)
     
     print(f"✅ Đã lưu kết quả vào thư mục: {output_dir}")
-    print(f"💡 Lưu ý: y_test giờ là ADJUSTMENT target (Weekly_Sales - GRU_pred)")
+    print(f"💡 Lưu ý: y_test giờ là ADJUSTMENT RATIO target ((Weekly_Sales - GRU_pred) / GRU_pred)")
+    print(f"   Ví dụ: 0.05 = tăng 5%, -0.03 = giảm 3%")
 
 def print_summary(gain_df, perm_df, shap_df, feature_type):
     """
@@ -611,14 +625,16 @@ def print_summary(gain_df, perm_df, shap_df, feature_type):
     print(f"   - feature_importance_permutation.csv") 
     print(f"   - feature_importance_shap.csv")
     print(f"   - ensemble_predictions.csv")
-    print(f"   - adjustment_stats.csv")
-    print(f"   - adjustment_targets.csv")
+    print(f"   - adjustment_ratio_stats.csv")
+    print(f"   - adjustment_ratio_targets.csv")
     print(f"   - Các biểu đồ PNG trong thư mục output_{feature_type}/")
     
     print(f"\n💡 LƯU Ý QUAN TRỌNG:")
-    print(f"   - Model này dự đoán ADJUSTMENT cho GRU predictions")
-    print(f"   - Target: Weekly_Sales - GRU_pred")
-    print(f"   - Final prediction = GRU_pred + XGBoost_adjustment")
+    print(f"   - Model này dự đoán ADJUSTMENT RATIO cho GRU predictions")
+    print(f"   - Target: (Weekly_Sales - GRU_pred) / GRU_pred")
+    print(f"   - Final prediction = GRU_pred * (1 + adjustment_ratio)")
+    print(f"   - Ví dụ: adjustment_ratio = 0.05 → tăng 5%")
+    print(f"   - Ví dụ: adjustment_ratio = -0.03 → giảm 3%")
 
 def export_model(model, feature_columns, feature_type, performance_metrics):
     """
@@ -648,14 +664,14 @@ def export_model(model, feature_columns, feature_type, performance_metrics):
         f.write(f"WALMART SALES PREDICTION MODEL INFO\n")
         f.write(f"=" * 50 + "\n\n")
         f.write(f"Ngày xuất: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"Loại model: XGBoost Adjustment cho GRU\n")
-        f.write(f"Tỉ lệ ensemble: GRU_pred + XGBoost_adjustment\n")
+        f.write(f"Loại model: XGBoost Adjustment Ratio cho GRU\n")
+        f.write(f"Tỉ lệ ensemble: GRU_pred * (1 + XGBoost_adjustment_ratio)\n")
         f.write(f"Feature type: {feature_type}\n\n")
         
         f.write(f"PERFORMANCE METRICS:\n")
         f.write(f"-" * 30 + "\n")
         f.write(f"GRU R²: {performance_metrics['gru']['r2']:.4f}\n")
-        f.write(f"XGBoost Adjustment R²: {performance_metrics['xgb']['r2']:.4f}\n")
+        f.write(f"XGBoost Adjustment Ratio R²: {performance_metrics['xgb']['r2']:.4f}\n")
         f.write(f"Ensemble R²: {performance_metrics['ensemble']['r2']:.4f}\n")
         f.write(f"Ensemble RMSE: {performance_metrics['ensemble']['rmse']:.2f}\n")
         f.write(f"Ensemble MAE: {performance_metrics['ensemble']['mae']:.2f}\n\n")
@@ -670,8 +686,10 @@ def export_model(model, feature_columns, feature_type, performance_metrics):
         f.write(f"-" * 30 + "\n")
         f.write(f"1. Load model: joblib.load('{model_path}')\n")
         f.write(f"2. Load features: open('{feature_path}', 'r').read().splitlines()\n")
-        f.write(f"3. Predict adjustment: adjustment = model.predict(features)\n")
-        f.write(f"4. Final prediction = GRU_pred + adjustment\n")
+        f.write(f"3. Predict adjustment ratio: adjustment_ratio = model.predict(features)\n")
+        f.write(f"4. Final prediction = GRU_pred * (1 + adjustment_ratio)\n")
+        f.write(f"5. Ví dụ: adjustment_ratio = 0.05 → tăng 5%\n")
+        f.write(f"6. Ví dụ: adjustment_ratio = -0.03 → giảm 3%\n")
     
     print(f"✅ Đã lưu model info tại: {info_path}")
     
@@ -694,6 +712,10 @@ def export_model(model, feature_columns, feature_type, performance_metrics):
     print(f"   - feature_columns.txt (Danh sách features)")
     print(f"   - model_info.txt (Thông tin chi tiết)")
     print(f"   - model_parameters.txt (Hyperparameters)")
+    print(f"\n💡 LƯU Ý QUAN TRỌNG:")
+    print(f"   - Model này dự đoán ADJUSTMENT RATIO, không phải giá trị tuyệt đối")
+    print(f"   - Final prediction = GRU_pred * (1 + adjustment_ratio)")
+    print(f"   - Adjustment ratio sẽ scale theo magnitude của GRU prediction")
     
     return output_dir
 
@@ -851,54 +873,57 @@ def main():
     """
     Main function với menu lựa chọn
     """
-    print("🚀 WALMART SALES PREDICTION - XGBOOST ADJUSTMENT MODEL")
+    print("🚀 WALMART SALES PREDICTION - XGBOOST ADJUSTMENT RATIO MODEL")
     print("=" * 60)
-    print("🎯 Mô hình: GRU + XGBoost Adjustment")
+    print("🎯 Mô hình: GRU + XGBoost Adjustment Ratio")
     print("📊 GRU: Dự đoán doanh thu dựa vào lịch sử 10 tuần")
-    print("🌳 XGBoost: Điều chỉnh GRU predictions dựa trên external factors")
-    print("🔄 Final Prediction = GRU_pred + XGBoost_adjustment")
+    print("🌳 XGBoost: Điều chỉnh GRU predictions theo tỷ lệ dựa trên external factors")
+    print("🔄 Final Prediction = GRU_pred * (1 + adjustment_ratio)")
+    print("💡 Adjustment ratio sẽ scale theo magnitude của GRU prediction")
     print("=" * 60)
     
     while True:
         print("\n📋 CHỌN PHƯƠNG PHÁP:")
-        print("1. Absolute Values (Giá trị tuyệt đối) - XGBoost Adjustment")
-        print("2. Relative Changes (Thay đổi tương đối) - XGBoost Adjustment")
-        print("3. So sánh cả hai approaches cho XGBoost Adjustment model")
-        print("4. Xuất XGBoost Adjustment model (Relative Changes)")
+        print("1. Absolute Values (Giá trị tuyệt đối) - XGBoost Adjustment Ratio")
+        print("2. Relative Changes (Thay đổi tương đối) - XGBoost Adjustment Ratio")
+        print("3. So sánh cả hai approaches cho XGBoost Adjustment Ratio model")
+        print("4. Xuất XGBoost Adjustment Ratio model (Relative Changes)")
         print("5. Thoát")
         
-        choice = input("\n👉 Nhập lựa chọn (1-5) cho XGBoost Adjustment model: ").strip()
+        choice = input("\n👉 Nhập lựa chọn (1-5) cho XGBoost Adjustment Ratio model: ").strip()
         
         if choice == '1':
-            print("\n🔄 Đang chạy XGBoost Adjustment model với Absolute Values approach...")
+            print("\n🔄 Đang chạy XGBoost Adjustment Ratio model với Absolute Values approach...")
             run_analysis('absolute')
             break
         elif choice == '2':
-            print("\n🔄 Đang chạy XGBoost Adjustment model với Relative Changes approach...")
+            print("\n🔄 Đang chạy XGBoost Adjustment Ratio model với Relative Changes approach...")
             run_analysis('relative')
             break
         elif choice == '3':
-            print("\n🔄 Đang chạy cả hai approaches để so sánh XGBoost Adjustment model...")
+            print("\n🔄 Đang chạy cả hai approaches để so sánh XGBoost Adjustment Ratio model...")
             compare_approaches()
             break
         elif choice == '4':
-            print("\n🔄 Đang xuất XGBoost Adjustment model (Relative Changes)...")
-            print("💡 Model này sẽ dự đoán ADJUSTMENT cho GRU predictions")
+            print("\n🔄 Đang xuất XGBoost Adjustment Ratio model (Relative Changes)...")
+            print("💡 Model này sẽ dự đoán ADJUSTMENT RATIO cho GRU predictions")
+            print("💡 Final prediction = GRU_pred * (1 + adjustment_ratio)")
             # Chạy analysis và xuất model
             results = run_analysis('relative')
             if results:
-                print("✅ Đã xuất XGBoost Adjustment model thành công!")
+                print("✅ Đã xuất XGBoost Adjustment Ratio model thành công!")
                 print("📋 Cách sử dụng:")
                 print("   1. GRU dự đoán doanh thu cơ bản")
-                print("   2. XGBoost dự đoán adjustment dựa trên external factors")
-                print("   3. Final = GRU_pred + adjustment")
-                print("\n💡 Lưu ý: Model này dự đoán ADJUSTMENT, không phải Weekly_Sales trực tiếp")
+                print("   2. XGBoost dự đoán adjustment ratio dựa trên external factors")
+                print("   3. Final = GRU_pred * (1 + adjustment_ratio)")
+                print("\n💡 Lưu ý: Model này dự đoán ADJUSTMENT RATIO, không phải Weekly_Sales trực tiếp")
+                print("💡 Adjustment ratio sẽ scale theo magnitude của GRU prediction")
             break
         elif choice == '5':
             print("👋 Tạm biệt!")
             break
         else:
-            print("❌ Lựa chọn không hợp lệ. Vui lòng chọn 1-5 cho XGBoost Adjustment model.")
+            print("❌ Lựa chọn không hợp lệ. Vui lòng chọn 1-5 cho XGBoost Adjustment Ratio model.")
 
 if __name__ == "__main__":
     main()

@@ -1,18 +1,18 @@
 WALMART SALES PREDICTION MODEL INFO
 ==================================================
 
-Ngày xuất: 2025-08-11 22:37:36
-Loại model: XGBoost Adjustment cho GRU
-Tỉ lệ ensemble: GRU_pred + XGBoost_adjustment
+Ngày xuất: 2025-08-17 20:20:43
+Loại model: XGBoost Adjustment Ratio cho GRU
+Tỉ lệ ensemble: GRU_pred * (1 + XGBoost_adjustment_ratio)
 Feature type: relative
 
 PERFORMANCE METRICS:
 ------------------------------
-GRU R²: 0.7424
-XGBoost Adjustment R²: -2.6268
-Ensemble R²: 0.9033
-Ensemble RMSE: 48709.28
-Ensemble MAE: 41754.58
+GRU R²: 0.9656
+XGBoost Adjustment Ratio R²: 0.0528
+Ensemble R²: 0.9844
+Ensemble RMSE: 19581.22
+Ensemble MAE: 15153.04
 
 FEATURES (10):
 ------------------------------
@@ -31,5 +31,7 @@ USAGE:
 ------------------------------
 1. Load model: joblib.load('output_relative/xgb_model.pkl')
 2. Load features: open('output_relative/feature_columns.txt', 'r').read().splitlines()
-3. Predict adjustment: adjustment = model.predict(features)
-4. Final prediction = GRU_pred + adjustment
+3. Predict adjustment ratio: adjustment_ratio = model.predict(features)
+4. Final prediction = GRU_pred * (1 + adjustment_ratio)
+5. Ví dụ: adjustment_ratio = 0.05 → tăng 5%
+6. Ví dụ: adjustment_ratio = -0.03 → giảm 3%
