@@ -189,7 +189,7 @@ class ImprovedGRUModelLoader:
             self.model.to(self.device)
             self.model.eval()
             
-            # Load scalers
+            # Load scalers (RobustScaler)
             with open('improved_sequence_scaler.pkl', 'rb') as f:
                 self.sequence_scaler = pickle.load(f)
             
@@ -198,6 +198,8 @@ class ImprovedGRUModelLoader:
             
             print("✅ Improved GRU model loaded successfully!")
             print(f"🔧 Device: {self.device}")
+            print(f"📊 Sequence Scaler: {type(self.sequence_scaler).__name__}")
+            print(f"📊 Target Scaler: {type(self.target_scaler).__name__}")
             
         except Exception as e:
             print(f"❌ Error loading model: {e}")
@@ -207,19 +209,33 @@ class ImprovedGRUModelLoader:
 def predict_sales_improved(model_loader, sales_history: List[float]) -> dict:
     """
     Dự đoán doanh thu với improved model và trend validation
+    Hỗ trợ đa dạng giá trị từ hàng nghìn đến hàng tỉ
     """
     try:
         # Validate input
         if len(sales_history) != 10:
             raise ValueError("Cần đúng 10 giá trị doanh thu tuần trước")
         
+        # Validate giá trị input
+        sales_array = np.array(sales_history, dtype=np.float32)
+        if np.any(sales_array <= 0):
+            raise ValueError("Tất cả giá trị doanh thu phải dương (> 0)")
+        
+        # Kiểm tra range giá trị
+        min_val = np.min(sales_array)
+        max_val = np.max(sales_array)
+        mean_val = np.mean(sales_array)
+        
+        print(f"📊 Input validation:")
+        print(f"   • Min: {min_val:,.0f}")
+        print(f"   • Max: {max_val:,.0f}")
+        print(f"   • Mean: {mean_val:,.0f}")
+        print(f"   • Range: {max_val/min_val:.1f}x")
+        
         # Convert to numpy array
-        sequence = np.array(sales_history, dtype=np.float32)
+        sequence = sales_array.reshape(1, -1, 1)
         
-        # Reshape to (1, 10, 1) for batch processing
-        sequence = sequence.reshape(1, -1, 1)
-        
-        # Scale sequence
+        # Scale sequence với RobustScaler
         sequence_scaled = model_loader.sequence_scaler.transform(sequence.reshape(-1, 1)).reshape(sequence.shape)
         
         # Convert to tensor
@@ -249,11 +265,29 @@ def predict_sales_improved(model_loader, sales_history: List[float]) -> dict:
         else:
             confidence = base_confidence
         
+        # Additional confidence adjustment based on value range
+        if min_val < 1000:  # Hàng nghìn
+            confidence *= 0.95
+        elif max_val > 1000000000:  # Hàng tỉ
+            confidence *= 0.95
+        elif max_val > 100000000:  # Hàng trăm triệu
+            confidence *= 0.98
+        
+        confidence = min(0.95, max(0.3, confidence))  # Clamp between 0.3 and 0.95
+        
         # Determine message
         if was_adjusted:
             message = f"Dự đoán đã được điều chỉnh theo xu hướng {trend_type}"
         else:
             message = f"Dự đoán thành công - xu hướng {trend_type}"
+        
+        # Add value range info to message
+        if min_val < 1000:
+            message += " (hàng nghìn)"
+        elif max_val > 1000000000:
+            message += " (hàng tỉ)"
+        elif max_val > 100000000:
+            message += " (hàng trăm triệu)"
         
         return {
             "predicted_sales": adjusted_prediction,
@@ -263,7 +297,14 @@ def predict_sales_improved(model_loader, sales_history: List[float]) -> dict:
             "trend_detected": trend_type,
             "was_adjusted": was_adjusted,
             "raw_prediction": raw_prediction,
-            "adjusted_prediction": adjusted_prediction
+            "adjusted_prediction": adjusted_prediction,
+            "input_statistics": {
+                "min_value": float(min_val),
+                "max_value": float(max_val),
+                "mean_value": float(mean_val),
+                "value_range_ratio": float(max_val/min_val),
+                "coefficient_of_variation": float(cv)
+            }
         }
         
     except Exception as e:
@@ -331,9 +372,9 @@ def get_model_info():
         "model_type": "Improved GRU",
         "architecture": {
             "input_size": 1,
-            "hidden_size": 256,
-            "num_layers": 3,
-            "dropout": 0.3,
+            "hidden_size": 128,
+            "num_layers": 2,
+            "dropout": 0.2,
             "bidirectional": True,
             "attention_heads": 8
         },
@@ -341,7 +382,15 @@ def get_model_info():
             "trend_validation": True,
             "balanced_training": True,
             "synthetic_data": True,
-            "attention_mechanism": True
+            "attention_mechanism": True,
+            "diverse_value_ranges": True,
+            "robust_scaling": True
+        },
+        "value_range_support": {
+            "min_value": "Hàng nghìn (1,000+)",
+            "max_value": "Hàng tỉ (1,000,000,000+)",
+            "scaling_method": "RobustScaler",
+            "outlier_handling": "Robust"
         },
         "lookback_period": 10,
         "features_used": ["Weekly_Sales"],
@@ -353,44 +402,62 @@ def get_model_info():
             "strong_decreasing",
             "volatile"
         ],
-        "description": "Improved GRU model với trend validation và enhanced architecture"
+        "description": "Improved GRU model với trend validation, enhanced architecture và khả năng xử lý đa dạng giá trị từ hàng nghìn đến hàng tỉ"
     }
 
 @app.get("/example")
 def get_example():
-    """Ví dụ input cho API với các xu hướng khác nhau"""
+    """Ví dụ input cho API với các xu hướng và giá trị đa dạng"""
     return {
         "examples": {
-            "increasing_trend": {
-                "sales_history": [1000000, 1050000, 1100000, 1150000, 1200000, 1250000, 1300000, 1350000, 1400000, 1450000],
-                "expected_trend": "strong_increasing"
+            "increasing_trend_thousands": {
+                "sales_history": [5000, 5500, 6000, 6500, 7000, 7500, 8000, 8500, 9000, 9500],
+                "expected_trend": "strong_increasing",
+                "value_range": "Hàng nghìn"
             },
-            "decreasing_trend": {
+            "decreasing_trend_millions": {
                 "sales_history": [1500000, 1450000, 1400000, 1350000, 1300000, 1250000, 1200000, 1150000, 1100000, 1050000],
-                "expected_trend": "strong_decreasing"
+                "expected_trend": "strong_decreasing",
+                "value_range": "Hàng triệu"
             },
-            "stable_trend": {
-                "sales_history": [1200000, 1200000, 1200000, 1200000, 1200000, 1200000, 1200000, 1200000, 1200000, 1200000],
-                "expected_trend": "stable"
+            "stable_trend_billions": {
+                "sales_history": [500000000, 500000000, 500000000, 500000000, 500000000, 500000000, 500000000, 500000000, 500000000, 500000000],
+                "expected_trend": "stable",
+                "value_range": "Hàng trăm triệu"
             },
-            "volatile_trend": {
-                "sales_history": [1000000, 1500000, 800000, 1600000, 900000, 1400000, 1100000, 1300000, 1200000, 1400000],
-                "expected_trend": "volatile"
+            "volatile_trend_tens_of_thousands": {
+                "sales_history": [50000, 80000, 30000, 90000, 40000, 70000, 60000, 85000, 55000, 75000],
+                "expected_trend": "volatile",
+                "value_range": "Hàng chục nghìn"
+            },
+            "increasing_trend_hundreds_of_millions": {
+                "sales_history": [100000000, 110000000, 120000000, 130000000, 140000000, 150000000, 160000000, 170000000, 180000000, 190000000],
+                "expected_trend": "strong_increasing",
+                "value_range": "Hàng trăm triệu"
             }
         },
-        "note": "Model sẽ tự động detect trend và validate prediction"
+        "note": "Model sẽ tự động detect trend và validate prediction cho tất cả các giá trị từ hàng nghìn đến hàng tỉ",
+        "supported_ranges": [
+            "Hàng nghìn (1,000 - 99,999)",
+            "Hàng chục nghìn (10,000 - 999,999)",
+            "Hàng trăm nghìn (100,000 - 9,999,999)",
+            "Hàng triệu (1,000,000 - 99,999,999)",
+            "Hàng chục triệu (10,000,000 - 999,999,999)",
+            "Hàng trăm triệu (100,000,000 - 999,999,999)",
+            "Hàng tỉ (1,000,000,000+)"
+        ]
     }
 
 @app.get("/test-trends")
 def test_different_trends():
-    """Test các xu hướng khác nhau"""
+    """Test các xu hướng khác nhau với đa dạng giá trị"""
     trends = {
-        "strong_increasing": [1000000, 1100000, 1200000, 1300000, 1400000, 1500000, 1600000, 1700000, 1800000, 1900000],
-        "increasing": [1000000, 1050000, 1100000, 1150000, 1200000, 1250000, 1300000, 1350000, 1400000, 1450000],
-        "stable": [1200000, 1200000, 1200000, 1200000, 1200000, 1200000, 1200000, 1200000, 1200000, 1200000],
-        "decreasing": [1500000, 1450000, 1400000, 1350000, 1300000, 1250000, 1200000, 1150000, 1100000, 1050000],
-        "strong_decreasing": [2000000, 1900000, 1800000, 1700000, 1600000, 1500000, 1400000, 1300000, 1200000, 1100000],
-        "volatile": [1000000, 1500000, 800000, 1600000, 900000, 1400000, 1100000, 1300000, 1200000, 1400000]
+        "strong_increasing_thousands": [1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900],
+        "increasing_millions": [1000000, 1050000, 1100000, 1150000, 1200000, 1250000, 1300000, 1350000, 1400000, 1450000],
+        "stable_billions": [500000000, 500000000, 500000000, 500000000, 500000000, 500000000, 500000000, 500000000, 500000000, 500000000],
+        "decreasing_tens_of_thousands": [50000, 45000, 40000, 35000, 30000, 25000, 20000, 15000, 10000, 5000],
+        "strong_decreasing_hundreds_of_millions": [200000000, 190000000, 180000000, 170000000, 160000000, 150000000, 140000000, 130000000, 120000000, 110000000],
+        "volatile_mixed": [50000, 80000, 30000, 90000, 40000, 70000, 60000, 85000, 55000, 75000]
     }
     
     results = {}
@@ -399,17 +466,25 @@ def test_different_trends():
             result = predict_sales_improved(model_loader, sales_history)
             results[trend_name] = {
                 "input": sales_history[-3:],  # Last 3 values
+                "input_range": f"{min(sales_history):,.0f} - {max(sales_history):,.0f}",
                 "predicted": result["predicted_sales"],
                 "trend_detected": result["trend_detected"],
                 "was_adjusted": result["was_adjusted"],
-                "confidence": result["confidence_score"]
+                "confidence": result["confidence_score"],
+                "input_statistics": result.get("input_statistics", {})
             }
         except Exception as e:
             results[trend_name] = {"error": str(e)}
     
     return {
         "trend_tests": results,
-        "note": "Test các xu hướng khác nhau để validate model performance"
+        "note": "Test các xu hướng khác nhau với đa dạng giá trị để validate model performance",
+        "value_ranges_tested": [
+            "Hàng nghìn (1,000+)",
+            "Hàng chục nghìn (10,000+)", 
+            "Hàng triệu (1,000,000+)",
+            "Hàng trăm triệu (100,000,000+)"
+        ]
     }
 
 if __name__ == "__main__":

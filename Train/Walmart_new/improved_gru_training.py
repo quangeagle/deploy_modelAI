@@ -91,7 +91,7 @@ class ImprovedGRUSalesPredictor(nn.Module):
 # ========== 2. ENHANCED DATASET CREATION ==========
 def create_balanced_sequential_data(df, lookback=10):
     """
-    Tạo balanced dataset với các xu hướng khác nhau
+    Tạo balanced dataset với các xu hướng khác nhau và đa dạng giá trị
     """
     print(f"\n🔄 Tạo balanced sequential data với lookback={lookback} tuần...")
     
@@ -125,97 +125,120 @@ def create_balanced_sequential_data(df, lookback=10):
             target_dates.append(store_df['Date'].iloc[i+lookback])
             target_store_ids.append(store_id)
     
-    # 2. Synthetic data để balance dataset (GIẢM SỐ LƯỢNG)
-    print("📊 Tạo synthetic data để balance dataset...")
+    # 2. Synthetic data để balance dataset với đa dạng giá trị
+    print("📊 Tạo synthetic data với đa dạng giá trị (hàng nghìn đến hàng tỉ)...")
     
-    # Increasing trends (GIẢM TỪ 1000 XUỐNG 200)
-    for _ in range(200):
-        start_value = np.random.uniform(500000, 1500000)
-        sequence = []
-        for i in range(lookback):
-            # Tạo growth rate realistic hơn
-            growth_rate = np.random.uniform(0.01, 0.08)  # Giảm từ 2-15% xuống 1-8%
-            if i == 0:
-                sequence.append(start_value)
-            else:
-                sequence.append(sequence[-1] * (1 + growth_rate))
-        
-        target = sequence[-1] * (1 + np.random.uniform(0.01, 0.08))
-        
-        all_sequences.append(np.array(sequence).reshape(-1, 1))
-        all_targets.append(target)
-        trend_labels.append("increasing")
-        target_dates.append(pd.NaT)
-        target_store_ids.append(None)
+    # Tạo synthetic data với các scale khác nhau
+    scales = [
+        (1000, 10000),      # Hàng nghìn
+        (10000, 100000),    # Hàng chục nghìn
+        (100000, 1000000),  # Hàng trăm nghìn
+        (1000000, 10000000), # Hàng triệu (giữ nguyên)
+        (10000000, 100000000), # Hàng chục triệu
+        (100000000, 1000000000) # Hàng trăm triệu
+    ]
     
-    # Decreasing trends (GIẢM TỪ 1000 XUỐNG 200)
-    for _ in range(200):
-        start_value = np.random.uniform(800000, 2000000)
-        sequence = []
-        for i in range(lookback):
-            # Tạo decline rate realistic hơn
-            decline_rate = np.random.uniform(0.01, 0.10)  # Giảm từ 2-20% xuống 1-10%
-            if i == 0:
-                sequence.append(start_value)
-            else:
-                sequence.append(sequence[-1] * (1 - decline_rate))
-        
-        target = sequence[-1] * (1 - np.random.uniform(0.01, 0.10))
-        
-        all_sequences.append(np.array(sequence).reshape(-1, 1))
-        all_targets.append(target)
-        trend_labels.append("decreasing")
-        target_dates.append(pd.NaT)
-        target_store_ids.append(None)
+    # Increasing trends với đa dạng scale
+    for scale_min, scale_max in scales:
+        for _ in range(50):  # 50 samples cho mỗi scale
+            start_value = np.random.uniform(scale_min, scale_max)
+            sequence = []
+            for i in range(lookback):
+                # Tạo growth rate realistic hơn
+                growth_rate = np.random.uniform(0.01, 0.08)
+                if i == 0:
+                    sequence.append(start_value)
+                else:
+                    sequence.append(sequence[-1] * (1 + growth_rate))
+            
+            target = sequence[-1] * (1 + np.random.uniform(0.01, 0.08))
+            
+            all_sequences.append(np.array(sequence).reshape(-1, 1))
+            all_targets.append(target)
+            trend_labels.append("increasing")
+            target_dates.append(pd.NaT)
+            target_store_ids.append(None)
     
-    # Volatile trends (GIẢM TỪ 500 XUỐNG 100)
-    for _ in range(100):
-        start_value = np.random.uniform(800000, 1500000)
-        sequence = []
-        for i in range(lookback):
-            if i == 0:
-                sequence.append(start_value)
-            else:
-                # Giảm volatility
-                change_rate = np.random.uniform(-0.08, 0.08)  # Giảm từ ±15% xuống ±8%
-                sequence.append(sequence[-1] * (1 + change_rate))
-        
-        # Target based on recent trend
-        recent_trend = (sequence[-1] - sequence[-3]) / sequence[-3]
-        target = sequence[-1] * (1 + recent_trend * np.random.uniform(0.3, 0.8))  # Giảm multiplier
-        
-        all_sequences.append(np.array(sequence).reshape(-1, 1))
-        all_targets.append(target)
-        trend_labels.append("volatile")
-        target_dates.append(pd.NaT)
-        target_store_ids.append(None)
+    # Decreasing trends với đa dạng scale
+    for scale_min, scale_max in scales:
+        for _ in range(50):  # 50 samples cho mỗi scale
+            start_value = np.random.uniform(scale_min, scale_max)
+            sequence = []
+            for i in range(lookback):
+                # Tạo decline rate realistic hơn
+                decline_rate = np.random.uniform(0.01, 0.10)
+                if i == 0:
+                    sequence.append(start_value)
+                else:
+                    sequence.append(sequence[-1] * (1 - decline_rate))
+            
+            target = sequence[-1] * (1 - np.random.uniform(0.01, 0.10))
+            
+            all_sequences.append(np.array(sequence).reshape(-1, 1))
+            all_targets.append(target)
+            trend_labels.append("decreasing")
+            target_dates.append(pd.NaT)
+            target_store_ids.append(None)
     
-    # Stable trends (GIẢM TỪ 500 XUỐNG 100)
-    for _ in range(100):
-        base_value = np.random.uniform(800000, 1500000)
-        sequence = []
-        for i in range(lookback):
-            # Giảm variation
-            variation = np.random.uniform(-0.03, 0.03)  # Giảm từ ±5% xuống ±3%
-            sequence.append(base_value * (1 + variation))
-        
-        target = base_value * (1 + np.random.uniform(-0.03, 0.03))
-        
-        all_sequences.append(np.array(sequence).reshape(-1, 1))
-        all_targets.append(target)
-        trend_labels.append("stable")
-        target_dates.append(pd.NaT)
-        target_store_ids.append(None)
+    # Volatile trends với đa dạng scale
+    for scale_min, scale_max in scales:
+        for _ in range(25):  # 25 samples cho mỗi scale
+            start_value = np.random.uniform(scale_min, scale_max)
+            sequence = []
+            for i in range(lookback):
+                if i == 0:
+                    sequence.append(start_value)
+                else:
+                    # Giảm volatility
+                    change_rate = np.random.uniform(-0.08, 0.08)
+                    sequence.append(sequence[-1] * (1 + change_rate))
+            
+            # Target based on recent trend
+            recent_trend = (sequence[-1] - sequence[-3]) / sequence[-3]
+            target = sequence[-1] * (1 + recent_trend * np.random.uniform(0.3, 0.8))
+            
+            all_sequences.append(np.array(sequence).reshape(-1, 1))
+            all_targets.append(target)
+            trend_labels.append("volatile")
+            target_dates.append(pd.NaT)
+            target_store_ids.append(None)
+    
+    # Stable trends với đa dạng scale
+    for scale_min, scale_max in scales:
+        for _ in range(25):  # 25 samples cho mỗi scale
+            base_value = np.random.uniform(scale_min, scale_max)
+            sequence = []
+            for i in range(lookback):
+                # Giảm variation
+                variation = np.random.uniform(-0.03, 0.03)
+                sequence.append(base_value * (1 + variation))
+            
+            target = base_value * (1 + np.random.uniform(-0.03, 0.03))
+            
+            all_sequences.append(np.array(sequence).reshape(-1, 1))
+            all_targets.append(target)
+            trend_labels.append("stable")
+            target_dates.append(pd.NaT)
+            target_store_ids.append(None)
     
     # Convert to numpy arrays
     all_sequences = np.array(all_sequences)
     all_targets = np.array(all_targets)
     
     print(f"✅ Tạo được {len(all_sequences):,} sequences")
+    print(f"   • Real data: {len([x for x in target_dates if pd.notna(x)]):,}")
+    print(f"   • Synthetic data: {len([x for x in target_dates if pd.isna(x)]):,}")
     print(f"   • Increasing: {trend_labels.count('increasing'):,}")
     print(f"   • Decreasing: {trend_labels.count('decreasing'):,}")
     print(f"   • Volatile: {trend_labels.count('volatile'):,}")
     print(f"   • Stable: {trend_labels.count('stable'):,}")
+    
+    # Thống kê về range giá trị
+    all_values = np.concatenate([all_sequences.reshape(-1), all_targets])
+    print(f"📊 Range giá trị:")
+    print(f"   • Min: {all_values.min():,.0f}")
+    print(f"   • Max: {all_values.max():,.0f}")
+    print(f"   • Mean: {all_values.mean():,.0f}")
     
     return all_sequences, all_targets, trend_labels, pd.to_datetime(target_dates), pd.Series(target_store_ids)
 
@@ -393,20 +416,32 @@ if __name__ == "__main__":
     print(f"   • Validation (real only): {len(val_sequences):,} samples")
     print(f"   • Test (real only): {len(test_sequences):,} samples")
     
-    # 4. Scale data
-    print(f"\n🔧 Scaling data...")
+    # 4. Scale data với robust scaling để xử lý đa dạng giá trị
+    print(f"\n🔧 Scaling data với robust scaling...")
+    
+    # Sử dụng RobustScaler thay vì MinMaxScaler để xử lý outliers tốt hơn
+    from sklearn.preprocessing import RobustScaler
     
     # Scale sequences
-    sequence_scaler = MinMaxScaler()
+    sequence_scaler = RobustScaler()
     train_sequences_scaled = sequence_scaler.fit_transform(train_sequences.reshape(-1, train_sequences.shape[-1])).reshape(train_sequences.shape)
     val_sequences_scaled = sequence_scaler.transform(val_sequences.reshape(-1, val_sequences.shape[-1])).reshape(val_sequences.shape)
     test_sequences_scaled = sequence_scaler.transform(test_sequences.reshape(-1, test_sequences.shape[-1])).reshape(test_sequences.shape)
     
     # Scale targets
-    target_scaler = MinMaxScaler()
+    target_scaler = RobustScaler()
     train_targets_scaled = target_scaler.fit_transform(train_targets.reshape(-1, 1)).flatten()
     val_targets_scaled = target_scaler.transform(val_targets.reshape(-1, 1)).flatten()
     test_targets_scaled = target_scaler.transform(test_targets.reshape(-1, 1)).flatten()
+    
+    print(f"✅ Scaling completed với RobustScaler")
+    print(f"   • Sequence scaler: {type(sequence_scaler).__name__}")
+    print(f"   • Target scaler: {type(target_scaler).__name__}")
+    
+    # Thống kê sau scaling
+    print(f"📊 Statistics sau scaling:")
+    print(f"   • Train sequences: {train_sequences_scaled.min():.3f} to {train_sequences_scaled.max():.3f}")
+    print(f"   • Train targets: {train_targets_scaled.min():.3f} to {train_targets_scaled.max():.3f}")
     
     # 5. Create datasets và dataloaders
     class WalmartSequentialDataset(Dataset):
@@ -502,39 +537,57 @@ if __name__ == "__main__":
     print(f"   • Improved model saved: improved_gru_model.pth")
     print(f"   • Improved scalers saved: improved_sequence_scaler.pkl, improved_target_scaler.pkl")
     
-    # 9. Test trend validation
-    print(f"\n🧪 TESTING TREND VALIDATION...")
+    # 9. Test trend validation với đa dạng giá trị
+    print(f"\n🧪 TESTING TREND VALIDATION VỚI ĐA DẠNG GIÁ TRỊ...")
     
-    # Test decreasing trend
-    decreasing_sequence = [1450000, 1400000, 1350000, 1300000, 1250000, 
-                          1200000, 1150000, 1100000, 1000000, 900000]
+    # Test cases với các scale khác nhau
+    test_cases = {
+        "decreasing_thousands": [5000, 4800, 4600, 4400, 4200, 4000, 3800, 3600, 3400, 3200],
+        "increasing_millions": [1000000, 1050000, 1100000, 1150000, 1200000, 1250000, 1300000, 1350000, 1400000, 1450000],
+        "stable_billions": [500000000, 500000000, 500000000, 500000000, 500000000, 500000000, 500000000, 500000000, 500000000, 500000000],
+        "volatile_tens_of_thousands": [50000, 80000, 30000, 90000, 40000, 70000, 60000, 85000, 55000, 75000]
+    }
     
-    # Scale sequence
-    sequence_scaled = sequence_scaler.transform(np.array(decreasing_sequence).reshape(-1, 1)).reshape(1, -1, 1)
-    sequence_tensor = torch.tensor(sequence_scaled, dtype=torch.float32).to(device)
-    
-    # Predict
-    with torch.no_grad():
-        prediction_scaled = model(sequence_tensor)
-        prediction = target_scaler.inverse_transform(prediction_scaled.cpu().numpy().reshape(-1, 1))[0, 0]
-    
-    # Validate trend
-    adjusted_prediction, was_adjusted = validate_trend_prediction(decreasing_sequence, prediction)
-    
-    print(f"📊 Decreasing Trend Test:")
-    print(f"   • Input: {decreasing_sequence[-3:]}...")
-    print(f"   • Raw Prediction: ${prediction:,.2f}")
-    print(f"   • Adjusted Prediction: ${adjusted_prediction:,.2f}")
-    print(f"   • Was Adjusted: {was_adjusted}")
+    for case_name, test_sequence in test_cases.items():
+        print(f"\n📊 Testing {case_name}: {test_sequence[-3:]}...")
+        
+        # Scale sequence
+        sequence_scaled = sequence_scaler.transform(np.array(test_sequence).reshape(-1, 1)).reshape(1, -1, 1)
+        sequence_tensor = torch.tensor(sequence_scaled, dtype=torch.float32).to(device)
+        
+        # Predict
+        with torch.no_grad():
+            prediction_scaled = model(sequence_tensor)
+            prediction = target_scaler.inverse_transform(prediction_scaled.cpu().numpy().reshape(-1, 1))[0, 0]
+        
+        # Validate trend
+        adjusted_prediction, was_adjusted = validate_trend_prediction(test_sequence, prediction)
+        
+        print(f"   • Input range: {test_sequence[0]:,.0f} to {test_sequence[-1]:,.0f}")
+        print(f"   • Raw Prediction: {prediction:,.2f}")
+        print(f"   • Adjusted Prediction: {adjusted_prediction:,.2f}")
+        print(f"   • Was Adjusted: {was_adjusted}")
+        
+        # Kiểm tra xem prediction có trong range hợp lý không
+        input_mean = np.mean(test_sequence)
+        input_std = np.std(test_sequence)
+        reasonable_range = (input_mean - 2*input_std, input_mean + 2*input_std)
+        
+        if reasonable_range[0] <= adjusted_prediction <= reasonable_range[1]:
+            print(f"   ✅ Prediction trong range hợp lý: {reasonable_range[0]:,.0f} to {reasonable_range[1]:,.0f}")
+        else:
+            print(f"   ⚠️ Prediction ngoài range hợp lý: {reasonable_range[0]:,.0f} to {reasonable_range[1]:,.0f}")
     
     print(f"\n📋 OPTIMIZED SUMMARY:")
     print(f"   • Optimized GRU model đã được train thành công")
-    print(f"   • Reduced synthetic data (600 samples thay vì 3000)")
+    print(f"   • Enhanced với đa dạng giá trị: hàng nghìn đến hàng tỉ")
+    print(f"   • Robust scaling để xử lý outliers và extreme values")
+    print(f"   • Balanced dataset với 6 scales khác nhau")
     print(f"   • Simplified architecture (128 hidden, 2 layers)")
     print(f"   • Longer training (200 epochs, patience=50)")
     print(f"   • Better learning rate (0.0005)")
     print(f"   • Test R²: {r2:.4f}")
-    print(f"   • Expected improvement: Higher R² score")
+    print(f"   • Expected improvement: Higher R² score và khả năng xử lý đa dạng giá trị")
     # Xuất đúng các dòng TEST thực tế (không synthetic) với cột date + gru_pred, 1 dòng/sequence test
     test_target_dates = pd.to_datetime(target_dates[test_real_idx])
     df_gru_test = pd.DataFrame({'date': test_target_dates, 'gru_pred': predictions})
