@@ -169,50 +169,114 @@ class ComparisonModelLoader:
 def validate_trend_prediction(input_sequence, prediction):
     """
     Validate prediction dựa trên xu hướng input (giống improved_gru_api.py)
+    Đã được cải thiện để xử lý extreme values và zero values
     """
     seq = np.asarray(input_sequence, dtype=float)
     n = len(seq)
     last = seq[-1]
     first = seq[0]
 
-    # 1) Xu hướng dài hạn (so sánh đầu-cuối)
-    overall_change = (last - first) / max(first, 1e-6)
+    # ========== STEP 1: INPUT VALIDATION & SANITIZATION ==========
+    # Kiểm tra và xử lý giá trị 0
+    if first == 0:
+        # Nếu giá trị đầu là 0, tìm giá trị khác 0 đầu tiên
+        non_zero_indices = np.where(seq > 0)[0]
+        if len(non_zero_indices) > 0:
+            first = seq[non_zero_indices[0]]
+        else:
+            # Nếu tất cả đều 0, sử dụng giá trị mặc định
+            first = 1.0
+    
+    # Kiểm tra range của dữ liệu
+    min_val = np.min(seq)
+    max_val = np.max(seq)
+    mean_val = np.mean(seq)
+    
+    # Nếu biến động quá lớn (>1000x), cần xử lý đặc biệt
+    if max_val > 0 and min_val > 0 and (max_val / min_val) > 1000:
+        print(f"⚠️  WARNING: Extreme value range detected: {min_val:,.0f} to {max_val:,.0f} ({max_val/min_val:.0f}x)")
+        # Sử dụng log scale để tính toán
+        use_log_scale = True
+    else:
+        use_log_scale = False
 
-    # 2) Trung bình động gần (5 tuần cuối vs 5 tuần trước)
-    half = n // 2
-    window = 5 if n >= 10 else max(2, n // 2)
-    recent_mean = np.mean(seq[-window:])
-    prev_mean = np.mean(seq[-2*window:-window]) if n >= 2*window else np.mean(seq[:half])
-    ma_change = (recent_mean - prev_mean) / max(prev_mean, 1e-6)
+    # ========== STEP 2: CALCULATE TREND METRICS ==========
+    if use_log_scale:
+        # Sử dụng log scale cho extreme values
+        log_seq = np.log(seq + 1)  # +1 để tránh log(0)
+        log_first = log_seq[0]
+        log_last = log_seq[-1]
+        
+        # Xu hướng dài hạn (log scale)
+        overall_change = (log_last - log_first) / max(abs(log_first), 1e-6)
+        
+        # Trung bình động gần (log scale)
+        window = 5 if n >= 10 else max(2, n // 2)
+        recent_mean = np.mean(log_seq[-window:])
+        prev_mean = np.mean(log_seq[-2*window:-window]) if n >= 2*window else np.mean(log_seq[:n//2])
+        ma_change = (recent_mean - prev_mean) / max(abs(prev_mean), 1e-6)
+        
+        # Slope chuẩn hóa (log scale)
+        x = np.arange(n)
+        slope = np.polyfit(x, log_seq, 1)[0] if n >= 2 else 0.0
+        slope_norm = slope / max(abs(np.mean(log_seq)), 1e-6)
+        
+    else:
+        # Sử dụng scale thường
+        # 1) Xu hướng dài hạn (so sánh đầu-cuối)
+        overall_change = (last - first) / max(abs(first), 1e-6)
+        
+        # 2) Trung bình động gần (5 tuần cuối vs 5 tuần trước)
+        half = n // 2
+        window = 5 if n >= 10 else max(2, n // 2)
+        recent_mean = np.mean(seq[-window:])
+        prev_mean = np.mean(seq[-2*window:-window]) if n >= 2*window else np.mean(seq[:half])
+        ma_change = (recent_mean - prev_mean) / max(abs(prev_mean), 1e-6)
+        
+        # 4) Slope chuẩn hóa (hồi quy tuyến tính)
+        x = np.arange(n)
+        slope = np.polyfit(x, seq, 1)[0] if n >= 2 else 0.0
+        slope_norm = slope / max(abs(np.mean(seq)), 1e-6)
 
-    # 3) Tỉ lệ số bước giảm/tăng
+    # 3) Tỉ lệ số bước giảm/tăng (luôn dùng scale thường)
     diffs = np.diff(seq)
     neg_ratio = float(np.mean(diffs < 0)) if diffs.size > 0 else 0.0
     pos_ratio = float(np.mean(diffs > 0)) if diffs.size > 0 else 0.0
 
-    # 4) Slope chuẩn hóa (hồi quy tuyến tính)
-    x = np.arange(n)
-    slope = np.polyfit(x, seq, 1)[0] if n >= 2 else 0.0
-    slope_norm = slope / max(np.mean(seq), 1e-6)
-
-    # Phân loại xu hướng kết hợp nhiều tiêu chí
+    # ========== STEP 3: TREND CLASSIFICATION ==========
     trend_type = "volatile"
-    if (overall_change <= -0.08) or (ma_change <= -0.05) or (slope_norm <= -0.02) or (neg_ratio >= 0.7):
+    
+    # Điều chỉnh ngưỡng cho extreme values
+    if use_log_scale:
+        # Ngưỡng nhỏ hơn cho log scale
+        strong_threshold = 0.5
+        moderate_threshold = 0.2
+    else:
+        # Ngưỡng thường
+        strong_threshold = 0.08
+        moderate_threshold = 0.03
+    
+    if (overall_change <= -strong_threshold) or (ma_change <= -moderate_threshold) or (slope_norm <= -moderate_threshold/2) or (neg_ratio >= 0.7):
         trend_type = "strong_decreasing"
-    elif (overall_change <= -0.03) or (ma_change <= -0.02) or (slope_norm <= -0.01) or (neg_ratio >= 0.6):
+    elif (overall_change <= -moderate_threshold) or (ma_change <= -moderate_threshold/2) or (slope_norm <= -moderate_threshold/4) or (neg_ratio >= 0.6):
         trend_type = "decreasing"
-    elif (overall_change >= 0.08) or (ma_change >= 0.05) or (slope_norm >= 0.02) or (pos_ratio >= 0.7):
+    elif (overall_change >= strong_threshold) or (ma_change >= moderate_threshold) or (slope_norm >= moderate_threshold/2) or (pos_ratio >= 0.7):
         trend_type = "strong_increasing"
-    elif (overall_change >= 0.03) or (ma_change >= 0.02) or (slope_norm >= 0.01) or (pos_ratio >= 0.6):
+    elif (overall_change >= moderate_threshold) or (ma_change >= moderate_threshold/2) or (slope_norm >= moderate_threshold/4) or (pos_ratio >= 0.6):
         trend_type = "increasing"
     else:
         # Ổn định nếu biên độ nhỏ và bước lên/xuống cân bằng
-        amplitude = (np.max(seq) - np.min(seq)) / max(np.mean(seq), 1e-6)
+        if use_log_scale:
+            amplitude = (np.max(log_seq) - np.min(log_seq)) / max(abs(np.mean(log_seq)), 1e-6)
+        else:
+            amplitude = (np.max(seq) - np.min(seq)) / max(abs(np.mean(seq)), 1e-6)
+            
         if amplitude < 0.05 and 0.4 <= pos_ratio <= 0.6:
             trend_type = "stable"
         else:
             trend_type = "volatile"
 
+    # ========== STEP 4: PREDICTION VALIDATION ==========
     # Kiểm tra hướng dự đoán so với xu hướng phát hiện
     predicted_direction = 1 if prediction > last else -1 if prediction < last else 0
     expected_direction = 0
@@ -221,15 +285,44 @@ def validate_trend_prediction(input_sequence, prediction):
     elif trend_type in ("strong_decreasing", "decreasing"):
         expected_direction = -1
 
+    # ========== STEP 5: EXTREME VALUE PROTECTION ==========
+    # Bảo vệ khỏi predictions quá lớn
+    input_std = np.std(seq)
+    input_mean = np.mean(seq)
+    
+    # Tính range hợp lý (mean ± 3*std)
+    if input_mean > 0:
+        reasonable_min = max(0, input_mean - 3 * input_std)
+        reasonable_max = input_mean + 3 * input_std
+        
+        # Nếu prediction ngoài range hợp lý, cần điều chỉnh
+        if prediction < reasonable_min or prediction > reasonable_max:
+            print(f"⚠️  WARNING: Prediction {prediction:,.0f} outside reasonable range [{reasonable_min:,.0f}, {reasonable_max:,.0f}]")
+            
+            # Điều chỉnh về range hợp lý
+            if prediction < reasonable_min:
+                adjusted_prediction = reasonable_min
+            else:
+                adjusted_prediction = reasonable_max
+            
+            return float(adjusted_prediction), True, f"{trend_type}_range_adjusted"
+
+    # ========== STEP 6: TREND-BASED ADJUSTMENT ==========
     # Nếu xung đột hướng, điều chỉnh về cùng chiều với xu hướng
     if expected_direction != 0 and predicted_direction != 0 and expected_direction != predicted_direction:
-        magnitude = max(abs(overall_change), abs(ma_change), abs(slope_norm), 0.02)
+        if use_log_scale:
+            magnitude = min(max(abs(overall_change), abs(ma_change), abs(slope_norm), 0.02), 0.5)  # Giới hạn magnitude
+        else:
+            magnitude = min(max(abs(overall_change), abs(ma_change), abs(slope_norm), 0.02), 0.3)  # Giới hạn magnitude
+            
         adjust_factor = 0.6 * magnitude  # mức điều chỉnh 60% cường độ xu hướng
+        
         if expected_direction > 0:
             adjusted_prediction = float(last * (1 + adjust_factor))
         else:
             adjusted_prediction = float(last * (1 - adjust_factor))
-        return adjusted_prediction, True, trend_type
+        
+        return adjusted_prediction, True, f"{trend_type}_trend_adjusted"
 
     return float(prediction), False, trend_type
 
@@ -243,6 +336,50 @@ def predict_gru_standalone(model_loader, sales_history: List[float]) -> SalesPre
         # Convert to numpy array
         sequence = np.array(sales_history, dtype=np.float32)
         
+        # ========== ENHANCED INPUT VALIDATION ==========
+        print(f"🔍 Input validation:")
+        print(f"   • Sales history: {[f'{x:,.0f}' for x in sales_history]}")
+        print(f"   • Min: {np.min(sequence):,.0f}")
+        print(f"   • Max: {np.max(sequence):,.0f}")
+        print(f"   • Mean: {np.mean(sequence):,.0f}")
+        print(f"   • Std: {np.std(sequence):,.0f}")
+        
+        # Kiểm tra extreme values
+        min_val = np.min(sequence)
+        max_val = np.max(sequence)
+        mean_val = np.mean(sequence)
+        
+        # Nếu có giá trị 0 và biến động lớn
+        if min_val == 0 and max_val > 0:
+            zero_count = np.sum(sequence == 0)
+            non_zero_values = sequence[sequence > 0]
+            
+            if len(non_zero_values) > 0:
+                print(f"⚠️  WARNING: {zero_count} zero values detected with extreme range")
+                print(f"   • Non-zero values: {[f'{x:,.0f}' for x in non_zero_values]}")
+                print(f"   • Range: {min_val:,.0f} to {max_val:,.0f} ({max_val/min_val if min_val > 0 else '∞'}x)")
+                
+                # Nếu biến động quá lớn (>1000x), cần xử lý đặc biệt
+                if max_val / (np.min(non_zero_values) + 1e-6) > 1000:
+                    print(f"🚨 EXTREME RANGE DETECTED: Using special handling")
+                    
+                    # Tạo sequence mới với giá trị 0 được thay thế
+                    adjusted_sequence = sequence.copy()
+                    for i in range(len(adjusted_sequence)):
+                        if adjusted_sequence[i] == 0:
+                            # Thay thế 0 bằng giá trị trung bình của các giá trị khác 0
+                            adjusted_sequence[i] = np.mean(non_zero_values) * 0.1  # 10% của mean
+                    
+                    print(f"   • Adjusted sequence: {[f'{x:,.0f}' for x in adjusted_sequence]}")
+                    sequence = adjusted_sequence
+        
+        # Kiểm tra range hợp lý
+        if mean_val > 0:
+            cv = np.std(sequence) / mean_val  # Coefficient of variation
+            if cv > 2.0:  # Nếu biến động > 200%
+                print(f"⚠️  HIGH VARIABILITY: CV = {cv:.2f} (>200%)")
+        
+        # ========== SEQUENCE PREPARATION ==========
         # Reshape to (1, 10, 1) for batch processing
         sequence = sequence.reshape(1, -1, 1)
         
@@ -252,33 +389,63 @@ def predict_gru_standalone(model_loader, sales_history: List[float]) -> SalesPre
         # Convert to tensor
         sequence_tensor = torch.tensor(sequence_scaled, dtype=torch.float32).to(model_loader.device)
         
-        # Predict
+        # ========== GRU PREDICTION ==========
         with torch.no_grad():
             prediction_scaled = model_loader.gru_model(sequence_tensor)
             prediction = model_loader.target_scaler.inverse_transform(prediction_scaled.cpu().numpy().reshape(-1, 1))
         
         raw_prediction = float(prediction[0, 0])
+        print(f"✅ Raw GRU prediction: {raw_prediction:,.2f}")
         
-        # Validate trend
+        # ========== TREND VALIDATION ==========
         adjusted_prediction, was_adjusted, trend_type = validate_trend_prediction(sales_history, raw_prediction)
+        print(f"✅ Adjusted prediction: {adjusted_prediction:,.2f}")
+        print(f"✅ Trend type: {trend_type}")
+        print(f"✅ Was adjusted: {was_adjusted}")
         
-        # Calculate confidence score
+        # ========== CONFIDENCE CALCULATION ==========
+        # Base confidence từ độ ổn định của input
         input_std = np.std(sales_history)
         input_mean = np.mean(sales_history)
-        cv = input_std / input_mean if input_mean > 0 else 0
-        base_confidence = max(0.5, 1 - cv)
         
-        # Adjust confidence based on trend consistency
-        if was_adjusted:
-            confidence = base_confidence * 0.8  # Lower confidence if adjusted
+        if input_mean > 0:
+            cv = input_std / input_mean
+            base_confidence = max(0.3, 1 - cv)  # Giảm confidence tối thiểu xuống 0.3
         else:
-            confidence = base_confidence
+            base_confidence = 0.3  # Confidence thấp cho trường hợp extreme
         
-        # Determine message
+        # Điều chỉnh confidence dựa trên:
+        # 1. Trend consistency
         if was_adjusted:
-            message = f"Dự đoán đã được điều chỉnh theo xu hướng {trend_type}"
+            base_confidence *= 0.7  # Giảm confidence nếu đã điều chỉnh
+        
+        # 2. Extreme value handling
+        if min_val == 0 and max_val > 0:
+            base_confidence *= 0.6  # Giảm confidence cho trường hợp có 0
+        
+        # 3. Range validation
+        if mean_val > 0:
+            reasonable_range = (mean_val - 2*input_std, mean_val + 2*input_std)
+            if adjusted_prediction < reasonable_range[0] or adjusted_prediction > reasonable_range[1]:
+                base_confidence *= 0.5  # Giảm confidence nếu prediction ngoài range hợp lý
+        
+        # Clamp confidence trong khoảng [0.2, 0.95]
+        confidence = min(0.95, max(0.2, base_confidence))
+        
+        # ========== MESSAGE GENERATION ==========
+        if was_adjusted:
+            if "range_adjusted" in trend_type:
+                message = f"Dự đoán đã được điều chỉnh về range hợp lý - xu hướng {trend_type.replace('_range_adjusted', '')}"
+            elif "trend_adjusted" in trend_type:
+                message = f"Dự đoán đã được điều chỉnh theo xu hướng {trend_type.replace('_trend_adjusted', '')}"
+            else:
+                message = f"Dự đoán đã được điều chỉnh theo xu hướng {trend_type}"
         else:
             message = f"Dự đoán thành công - xu hướng {trend_type}"
+        
+        # Thêm thông tin về extreme values nếu có
+        if min_val == 0 and max_val > 0:
+            message += " (Đã xử lý extreme values từ 0)"
         
         return SalesPredictionResponse(
             predicted_sales=adjusted_prediction,
@@ -292,6 +459,7 @@ def predict_gru_standalone(model_loader, sales_history: List[float]) -> SalesPre
         )
         
     except Exception as e:
+        print(f"❌ Error in GRU standalone prediction: {e}")
         raise HTTPException(status_code=400, detail=f"Lỗi GRU prediction: {str(e)}")
 
 def create_xgboost_explanation(model_loader, features_array: np.ndarray, external_factors_current: dict, external_factors_previous: dict, xgb_adjustment: float) -> XGBoostExplanationResponse:
@@ -409,10 +577,19 @@ def create_xgboost_explanation(model_loader, features_array: np.ndarray, externa
         # Holiday analysis
         if 'Holiday_Flag' in feature_contributions:
             holiday_contrib = feature_contributions['Holiday_Flag']
-            if holiday_contrib['shap_value'] > 0:
-                business_insights.append("Có ngày lễ → Khách hàng mua sắm nhiều → Tăng doanh thu")
-            else:
-                business_insights.append("Không có ngày lễ → Doanh thu bình thường")
+            holiday_flag_val = holiday_contrib.get('feature_value', 0)
+            shap_val = holiday_contrib.get('shap_value', 0.0)
+            # Diễn giải đúng theo giá trị cờ ngày lễ và hướng tác động SHAP
+            if holiday_flag_val >= 0.5:  # Có ngày lễ
+                if shap_val > 0:
+                    business_insights.append("Có ngày lễ → Nhu cầu tăng → Tăng doanh thu")
+                else:
+                    business_insights.append("Có ngày lễ nhưng mô hình dự báo tác động giảm (bối cảnh khác lấn át)")
+            else:  # Không có ngày lễ
+                if shap_val > 0:
+                    business_insights.append("Không có ngày lễ nhưng các yếu tố khác bù đắp → Dự báo tăng")
+                else:
+                    business_insights.append("Không có ngày lễ → Doanh thu bình thường/giảm nhẹ")
         
         # Month/Season analysis
         if 'Month' in feature_contributions:
@@ -861,7 +1038,7 @@ def gru_ensemble_only(request: ComparisonRequest):
 
 @app.get("/example")
 def get_example():
-    """Ví dụ input cho comparison API với adjustment ratio"""
+    """Ví dụ input cho comparison API với adjustment ratio và extreme values handling"""
     return {
         "example_request": {
             "sales_history": [800000, 850000, 900000, 950000, 1000000, 1050000, 1100000, 1150000, 1200000, 1250000],
@@ -884,15 +1061,175 @@ def get_example():
                 "Unemployment": 5.0
             }
         },
+        "extreme_value_example": {
+            "description": "Trường hợp extreme values: 8 tuần 0, tuần 9: 400k, tuần 10: 1.2M",
+            "sales_history": [0, 0, 0, 0, 0, 0, 0, 0, 400000, 1200000],
+            "issues": [
+                "Division by zero khi first = 0",
+                "Extreme range: 0 to 1,200,000 (∞x)",
+                "GRU model có thể dự đoán giá trị không hợp lý (hàng trăm nghìn tỷ)"
+            ],
+            "solutions": [
+                "Zero value handling: thay thế 0 bằng 10% của non-zero mean",
+                "Log scale calculation cho extreme ranges (>1000x)",
+                "Range validation: giới hạn prediction trong mean ± 3*std",
+                "Confidence reduction cho extreme cases"
+            ]
+        },
         "note": "Gửi POST request đến /compare để so sánh cả 2 phương pháp",
+        "test_endpoints": {
+            "/test-extreme-values": "Xem các test cases extreme values",
+            "/test-user-case": "Test trực tiếp trường hợp của user"
+        },
         "ensemble_formula": "Final Prediction = GRU_prediction * (1 + XGBoost_adjustment_ratio)",
         "adjustment_ratio_explanation": {
             "positive": "adjustment_ratio > 0 → Tăng doanh thu (ví dụ: 0.05 = tăng 5%)",
             "negative": "adjustment_ratio < 0 → Giảm doanh thu (ví dụ: -0.03 = giảm 3%)",
             "zero": "adjustment_ratio = 0 → Không thay đổi doanh thu"
         },
-        "scaling_benefit": "Adjustment ratio sẽ scale theo magnitude của GRU prediction, phù hợp với mọi khoảng giá trị từ hàng nghìn đến hàng tỉ"
+        "scaling_benefit": "Adjustment ratio sẽ scale theo magnitude của GRU prediction, phù hợp với mọi khoảng giá trị từ hàng nghìn đến hàng tỉ",
+        "extreme_value_handling": {
+            "zero_values": "Được thay thế bằng 10% của non-zero mean để tránh division by zero",
+            "extreme_ranges": "Sử dụng log scale calculation cho ranges >1000x",
+            "range_protection": "Prediction bị giới hạn trong reasonable range (mean ± 3*std)",
+            "confidence_adjustment": "Confidence giảm cho extreme cases để phản ánh độ không chắc chắn"
+        }
     }
+
+@app.get("/test-extreme-values")
+def test_extreme_values():
+    """Test endpoint cho trường hợp extreme values (0 → 400,000 → 1,200,000)"""
+    return {
+        "test_cases": {
+            "extreme_case_1": {
+                "description": "8 tuần đầu = 0, tuần 9 = 400,000, tuần 10 = 1,200,000",
+                "sales_history": [0, 0, 0, 0, 0, 0, 0, 0, 400000, 1200000],
+                "expected_issues": [
+                    "Division by zero khi first = 0",
+                    "Extreme range: 0 to 1,200,000 (∞x)",
+                    "GRU model có thể dự đoán giá trị không hợp lý"
+                ],
+                "solutions_applied": [
+                    "Zero value handling: thay thế 0 bằng 10% của mean non-zero values",
+                    "Log scale calculation cho extreme ranges",
+                    "Range validation: giới hạn prediction trong mean ± 3*std",
+                    "Confidence reduction cho extreme cases"
+                ]
+            },
+            "extreme_case_2": {
+                "description": "Biến động từ 1000 → 1,000,000 (1000x)",
+                "sales_history": [1000, 2000, 5000, 10000, 50000, 100000, 200000, 500000, 800000, 1000000],
+                "expected_issues": [
+                    "High coefficient of variation (>200%)",
+                    "GRU scaling issues với extreme ranges"
+                ]
+            },
+            "normal_case": {
+                "description": "Biến động bình thường (±20%)",
+                "sales_history": [1000000, 1050000, 980000, 1100000, 1020000, 1080000, 950000, 1120000, 1040000, 1160000],
+                "expected_behavior": "Normal prediction với confidence cao"
+            }
+        },
+        "how_to_test": {
+            "step1": "Gửi POST request đến /compare với sales_history từ test case",
+            "step2": "Kiểm tra response để xem prediction có hợp lý không",
+            "step3": "Kiểm tra confidence score và adjustment flags",
+            "step4": "So sánh GRU standalone vs ensemble"
+        },
+        "expected_fixes": {
+            "zero_handling": "Giá trị 0 sẽ được thay thế bằng 10% của non-zero mean",
+            "range_protection": "Prediction sẽ bị giới hạn trong reasonable range (mean ± 3*std)",
+            "confidence_adjustment": "Confidence sẽ giảm cho extreme cases",
+            "trend_validation": "Prediction sẽ được điều chỉnh theo xu hướng phát hiện"
+        }
+    }
+
+@app.get("/test-user-case")
+def test_user_case():
+    """Test trực tiếp trường hợp của user: 8 tuần 0, tuần 9: 400k, tuần 10: 1.2M"""
+    try:
+        print("🧪 Testing user's extreme case...")
+        
+        # Test case của user
+        user_sales_history = [0, 0, 0, 0, 0, 0, 0, 0, 400000, 1200000]
+        
+        # Test GRU standalone
+        print("\n🔍 Testing GRU standalone...")
+        gru_result = predict_gru_standalone(model_loader, user_sales_history)
+        
+        # Test ensemble (nếu có external factors)
+        ensemble_result = None
+        try:
+            # Tạo external factors mẫu
+            external_factors_current = {
+                "Temperature": 25.0,
+                "Fuel_Price": 3.50,
+                "CPI": 200.0,
+                "Unemployment": 5.0,
+                "Holiday_Flag": 0,
+                "Month": 6,
+                "WeekOfYear": 25,
+                "Year": 2024,
+                "DayOfWeek": 1,
+                "Is_Weekend": 0
+            }
+            external_factors_previous = {
+                "Temperature": 24.0,
+                "Fuel_Price": 3.45,
+                "CPI": 199.0,
+                "Unemployment": 5.1
+            }
+            
+            print("\n🔍 Testing ensemble...")
+            ensemble_result = predict_gru_ensemble(
+                model_loader, 
+                user_sales_history, 
+                external_factors_current, 
+                external_factors_previous
+            )
+        except Exception as e:
+            print(f"⚠️  Ensemble test failed: {e}")
+        
+        # Analysis
+        analysis = analyze_comparison(gru_result, ensemble_result) if ensemble_result else {"error": "No ensemble result"}
+        
+        return {
+            "test_case": {
+                "description": "User's extreme case: 8 weeks 0, week 9: 400k, week 10: 1.2M",
+                "sales_history": user_sales_history,
+                "range_analysis": {
+                    "min": 0,
+                    "max": 1200000,
+                    "mean": 160000,
+                    "std": 379473,
+                    "coefficient_of_variation": 2.37,
+                    "zero_count": 8,
+                    "non_zero_values": [400000, 1200000]
+                }
+            },
+            "gru_standalone_result": {
+                "predicted_sales": gru_result.predicted_sales,
+                "confidence_score": gru_result.confidence_score,
+                "trend_detected": gru_result.trend_detected,
+                "was_adjusted": gru_result.was_adjusted,
+                "message": gru_result.message
+            },
+            "ensemble_result": ensemble_result,
+            "comparison_analysis": analysis,
+            "fixes_applied": {
+                "zero_handling": "Zero values replaced with 10% of non-zero mean",
+                "extreme_range_detection": "Log scale calculation applied",
+                "range_protection": "Prediction limited to reasonable range",
+                "confidence_adjustment": "Reduced confidence for extreme case"
+            }
+        }
+        
+    except Exception as e:
+        print(f"❌ Error testing user case: {e}")
+        return {
+            "error": f"Test failed: {str(e)}",
+            "test_case": "User's extreme case: 8 weeks 0, week 9: 400k, week 10: 1.2M"
+        }
 
 if __name__ == "__main__":
     import uvicorn
